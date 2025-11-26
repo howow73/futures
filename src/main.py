@@ -1,5 +1,6 @@
 
 from PyQt6.QtCore import Qt, QTimer, QDateTime, QObject, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, QDateTime, QObject, pyqtSignal
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QLabel, QVBoxLayout, QHBoxLayout, QPushButton,
@@ -8,40 +9,53 @@ from PyQt6.QtWidgets import (
 )
 import sys
 
+# 이 파일은 PyQt6로 만든 간단한 데스크탑 UI 예제입니다.
+# 한국어 주석을 추가하여 각 클래스와 주요 메서드의 목적과 동작을 설명합니다.
+# - AppController: 신호(signal)를 통해 전략 시작/종료, 상태 변경, 로그 추가 등을 관리
+# - 여러 탭(MainTab, StrategyTab, ScheduleTab, SettingsTab, AdminTab)을 통해 UI 구성
+
 
 class AppController(QObject):
+    # 전략 시작/정지 요청을 전달하는 시그널
     startStrategy = pyqtSignal(int)
     stopStrategy = pyqtSignal(int)
     scheduleUpdated = pyqtSignal(dict)
     settingsSaved = pyqtSignal(object)
 
+    # 상태 변경 및 로그 추가 시그널
     statusChanged = pyqtSignal(str)
     logAppended = pyqtSignal(dict)
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        # 현재 실행 중인 전략 번호(없으면 None)
         self._running_strategy: int | None = None
+        # 시그널과 내부 핸들러 연결
         self.startStrategy.connect(self._on_start_strategy)
         self.stopStrategy.connect(self._on_stop_strategy)
 
     def now_str(self) -> str:
+        # 현재 시간을 'hh:mm:ss' 형식의 문자열로 반환
         return QDateTime.currentDateTime().toString("hh:mm:ss")
 
     def _on_start_strategy(self, n: int):
+        # 전략 n을 실행 상태로 설정하고 상태/로그 시그널을 보냄
         self._running_strategy = n
         self.statusChanged.emit(f"★{n}전략 실행중★")
-        self.logAppended.emit({"time": self.now_str(),"strat": f"{n}전략","prog": "시작","result": "실행 시작","note": ""})
+        self.logAppended.emit({"time": self.now_str(), "strat": f"{n}전략", "prog": "시작", "result": "실행 시작", "note": ""})
 
     def _on_stop_strategy(self, n: int):
+        # 요청된 전략이 현재 실행 중이면 실행 상태를 해제
         if self._running_strategy == n:
             self._running_strategy = None
             self.statusChanged.emit("★대기중★")
-        self.logAppended.emit({"time": self.now_str(),"strat": f"{n}전략","prog": "종료","result": "정지 요청","note": ""})
+        self.logAppended.emit({"time": self.now_str(), "strat": f"{n}전략", "prog": "종료", "result": "정지 요청", "note": ""})
 
 
 class LogTable(QTableWidget):
     def __init__(self, parent=None):
         super().__init__(0, 5, parent)
+        # 로그 테이블: 시간, 전략, 진입, 결과, 기타
         self.setHorizontalHeaderLabels(["시간", "전략", "진입", "결과", "기타"])
         header = self.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
@@ -60,6 +74,7 @@ class LogTable(QTableWidget):
         self.insertRow(row)
         for col, val in enumerate([time_str, strat, prog, result, note]):
             item = QTableWidgetItem(val)
+            # 결과 컬럼은 왼쪽 정렬, 나머지는 가운데 정렬
             align = Qt.AlignmentFlag.AlignCenter if col != 3 else (Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
             item.setTextAlignment(align)
             self.setItem(row, col, item)
@@ -73,12 +88,14 @@ class MainTab(QWidget):
         lay = QVBoxLayout(self)
 
         top = QHBoxLayout()
+        # 상단 상태 라벨
         self.status = QLabel("★대기중★")
         self.status.setObjectName("statusLabel")
         self.status.setStyleSheet("#statusLabel { background: #efefef; padding: 4px 8px; border-radius: 6px; font-weight: 600; }")
         top.addWidget(self.status)
         top.addStretch(1)
 
+        # 전략 시작/정지 버튼
         self.btn_start1 = QPushButton("1전략")
         self.btn_start2 = QPushButton("2전략")
         self.btn_start3 = QPushButton("3전략")
@@ -94,9 +111,11 @@ class MainTab(QWidget):
         self.table = LogTable()
         lay.addWidget(self.table, 1)
 
+        # 버튼 클릭 시 컨트롤러의 시그널을 emit 하도록 연결
         self.btn_start1.clicked.connect(lambda: self.controller.startStrategy.emit(1))
         self.btn_start2.clicked.connect(lambda: self.controller.startStrategy.emit(2))
         self.btn_start3.clicked.connect(lambda: self.controller.startStrategy.emit(3))
+        # 정지 버튼은 예시로 1전략 정지 시그널을 보냄(필요 시 수정)
         self.btn_stop.clicked.connect(lambda: self.controller.stopStrategy.emit(1))
 
         self.controller.statusChanged.connect(self.status.setText)
@@ -107,7 +126,8 @@ class MainTab(QWidget):
             self.table.add_row(*r)
 
     def _append_log(self, payload: dict):
-        self.table.add_row(payload.get("time",""), payload.get("strat",""), payload.get("prog",""), payload.get("result",""), payload.get("note",""))
+        # 컨트롤러에서 전달된 로그 페이로드를 테이블에 추가
+        self.table.add_row(payload.get("time", ""), payload.get("strat", ""), payload.get("prog", ""), payload.get("result", ""), payload.get("note", ""))
 
 
 class StrategyTab(QWidget):
@@ -115,6 +135,7 @@ class StrategyTab(QWidget):
         super().__init__(parent)
         self.controller = controller
         root = QVBoxLayout(self)
+        # 전략 설정 탭: 각 전략별로 여러 체크박스를 제공
         root.addWidget(self._make_strategy_box("1전략"))
         root.addWidget(self._make_strategy_box("2전략", checked=True))
         root.addWidget(self._make_strategy_box("3전략"))
@@ -123,6 +144,7 @@ class StrategyTab(QWidget):
     def _make_strategy_box(self, title: str, checked: bool=False) -> QGroupBox:
         box = QGroupBox(title)
         gl = QGridLayout(box)
+        # 각 전략 박스에 들어갈 체크박스 라벨과 기본 상태
         labels = [("완성봉", checked), ("현재봉", False), ("마감", False), ("올진입", checked), ("통진입", False), ("숏진입", False)]
         for i, (text, chk) in enumerate(labels):
             cb = QCheckBox(text); cb.setChecked(chk)
@@ -144,6 +166,7 @@ class ScheduleTab(QWidget):
             lbl = QLabel(h); lbl.setStyleSheet("font-weight:600")
             grid.addWidget(lbl, 0, c)
 
+        # 한 행(row)당 실행시간, 종료(유지) 수치, 종료(청) 시각, 청(체크박스)을 배치하는 내부 함수
         def row_widgets(row_idx: int, name: str):
             grid.addWidget(QLabel(name), row_idx, 0)
             t_exec = QLineEdit(); t_exec.setMaxLength(6); t_exec.setPlaceholderText("HHMMSS")
@@ -160,7 +183,7 @@ class ScheduleTab(QWidget):
         row_widgets(3, "3전략")
 
         root.addWidget(box)
-        tip = QLabel("지정한 시간에 전략을 시작/종료/청산합니다.\n종료(유지)는 보유계약을 유지한 채 종료, 종료(청산)는 보유계약을 청산하고 종료")
+        tip = QLabel("지정한 시간에 전략을 시작/종료/청산합니다.\\n종료(유지)는 보유계약을 유지한 채 종료, 종료(청산)는 보유계약을 청산하고 종료")
         tip.setWordWrap(True)
         root.addWidget(tip)
 
@@ -277,5 +300,7 @@ def main():
     sys.exit(app.exec())
 
 
+if __name__ == "__main__":
+    main()
 if __name__ == "__main__":
     main()
