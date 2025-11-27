@@ -1,84 +1,115 @@
-from PyQt6.QtCore import Qt, QTimer, QDateTime, QObject, pyqtSignal
-# Note: PyQt6 is not required for detection; present due to earlier context.
-# Core deps: opencv-python, pyautogui, numpy, pillow
-
-import argparse, time
-from typing import Optional, Tuple, List
-import numpy as np, pyautogui
-from PIL import Image
+import time
 import cv2
+import numpy as np
+import pyautogui
+import mss # 고속 캡처 라이브러리
+from PyQt6.QtCore import QThread, pyqtSignal
 
-pyautogui.FAILSAFE = True
+# 윈도우 활성화를 위한 API
+import win32gui, win32con
 
-def parse_region(s: Optional[str]):
-    return None if not s else tuple(int(p.strip()) for p in s.split(","))
+class ImageDetectionThread(QThread):
+    # 로그 메시지와 상태를 본체(GUI)로 보내는 신호
+    log_signal = pyqtSignal(dict) 
+    
+    def __init__(self, template_path, region, hotkey, scales=[0.9, 1.0, 1.1], threshold=0.87, target_window_name="주문"):
+        super().__init__()
+        self.template_path = template_path
+        self.region = region # (x, y, w, h) 또는 None
+        self.hotkey = hotkey # 예: ['f1'] 또는 ['ctrl', '1']
+        self.scales = scales
+        self.threshold = threshold
+        self.target_window_name = target_window_name # 활성화할 창 이름
+        self.is_running = True
+        self.cooldown = 3.0 # 중복 주문 방지 대기 시간
+        
+        # 템플릿 이미지 미리 로드
+        self.template = cv2.imread(template_path)
+        if self.template is None:
+            print(f"이미지 로드 실패: {template_path}")
+            self.is_running = False
 
-def parse_hotkey(s: str):
-    return [t.strip() for t in s.split("+") if t.strip()]
+    def focus_window(self):
+        """주문 창을 찾아 맨 앞으로 가져옴"""
+        hwnd = win32gui.FindWindow(None, self.target_window_name) # 정확한 창 이름 필요 (또는 EnumWindows로 검색)
+        if hwnd:
+            try:
+                if win32gui.IsIconic(hwnd): # 최소화 되어있으면 복구
+                    win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+                win32gui.SetForegroundWindow(hwnd)
+                time.sleep(0.1) # 창이 뜨는 딜레이 확보
+                return True
+            except:
+                pass
+        return False
 
-def grab_screen(region):
-    shot = pyautogui.screenshot(region=region) if region else pyautogui.screenshot()
-    import numpy as _np, cv2 as _cv2
-    return _cv2.cvtColor(_np.array(shot), _cv2.COLOR_RGB2BGR)
-
-def load_template(path: str):
-    img = Image.open(path).convert("RGB")
-    return cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
-
-def multi_scale_match(screen, template, scales, threshold):
-    h_t, w_t = template.shape[:2]
-    best_val, best_loc, best_wh, best_scale = -1.0, None, None, None
-    for s in scales:
-        tw, th = int(w_t*s), int(h_t*s)
-        if tw < 8 or th < 8: continue
-        tpl = cv2.resize(template, (tw, th), interpolation=cv2.INTER_AREA if s<1.0 else cv2.INTER_CUBIC)
-        res = cv2.matchTemplate(screen, tpl, cv2.TM_CCOEFF_NORMED)
-        min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
-        if max_val > best_val:
-            best_val, best_loc, best_wh, best_scale = max_val, max_loc, (tw, th), s
-    if best_val >= threshold:
-        x, y = best_loc; w, h = best_wh
-        return True, (x, y, w, h), best_val, best_scale
-    return False, None, best_val, best_scale
-
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--template", required=True)
-    ap.add_argument("--threshold", type=float, default=0.87)
-    ap.add_argument("--cooldown", type=float, default=3.0)
-    ap.add_argument("--hotkey", type=str, default="ctrl+alt+1")
-    ap.add_argument("--region", type=str, default=None)
-    ap.add_argument("--interval", type=float, default=0.4)
-    ap.add_argument("--scales", type=str, default="1.0,0.9,1.1")
-    ap.add_argument("--once", action="store_true")
-    args = ap.parse_args()
-
-    region = parse_region(args.region)
-    scales = [float(s.strip()) for s in args.scales.split(",") if s.strip()]
-    template = load_template(args.template)
-    combo = parse_hotkey(args.hotkey)
-
-    print(f"[Detector] template={args.template}, threshold={args.threshold}, hotkey={combo}")
-    if region: print(f"[Detector] region={region}")
-    print(f"[Detector] scales={scales}, interval={args.interval}s, cooldown={args.cooldown}s, once={args.once}")
-    last_trigger = 0.0
-
-    try:
-        while True:
-            img = grab_screen(region)
-            ok, rect, score, scale = multi_scale_match(img, template, scales, args.threshold)
-            now = time.time()
-            if ok and (now - last_trigger) >= args.cooldown:
-                print(f"[HIT] score={score:.3f} scale={scale} rect={rect} → hotkey {combo}")
+    def run(self):
+        self.log_signal.emit({"time": "시스템", "strat": "감시", "prog": "시작", "result": "스레드ON", "note": ""})
+        
+        with mss.mss() as sct: # mss 사용으로 속도 향상
+            last_trigger_time = 0
+            
+            while self.is_running:
                 try:
-                    pyautogui.hotkey(*combo)
-                except Exception as e:
-                    print("[ERROR] failed to send hotkey:", e)
-                last_trigger = now
-                if args.once: break
-            time.sleep(args.interval)
-    except KeyboardInterrupt:
-        print("Stopped by user (Ctrl+C).")
+                    # 1. 고속 화면 캡처
+                    if self.region:
+                        monitor = {"top": self.region[1], "left": self.region[0], "width": self.region[2], "height": self.region[3]}
+                        img_np = np.array(sct.grab(monitor))
+                    else:
+                        img_np = np.array(sct.grab(sct.monitors[1])) # 전체 화면
 
-if __name__ == "__main__":
-    main()
+                    # mss는 BGRA를 반환하므로 BGR로 변환 (OpenCV용)
+                    screen_img = cv2.cvtColor(img_np, cv2.COLOR_BGRA2BGR)
+
+                    # 2. 멀티 스케일 매칭
+                    found = False
+                    h_t, w_t = self.template.shape[:2]
+
+                    for scale in self.scales:
+                        # 리사이징 (속도 최적화를 위해 너무 작거나 큰 스케일 제외 가능)
+                        curr_w, curr_h = int(w_t * scale), int(h_t * scale)
+                        if curr_w < 10 or curr_h < 10: continue
+
+                        resized_tpl = cv2.resize(self.template, (curr_w, curr_h))
+                        
+                        # 템플릿 매칭 수행
+                        res = cv2.matchTemplate(screen_img, resized_tpl, cv2.TM_CCOEFF_NORMED)
+                        min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
+
+                        if max_val >= self.threshold:
+                            now = time.time()
+                            if (now - last_trigger_time) > self.cooldown:
+                                found = True
+                                # 매칭 성공 로그
+                                self.log_signal.emit({
+                                    "time": "감지", 
+                                    "strat": "이미지", 
+                                    "prog": f"정확도{max_val:.2f}", 
+                                    "result": "발견", 
+                                    "note": f"배율:{scale}"
+                                })
+
+                                # 3. 창 활성화 및 주문 전송
+                                # 주의: 여기서 창 활성화 로직을 수행하거나, 메인 스레드로 요청해야 안전함
+                                # 간단한 구현을 위해 여기서 수행 (관리자 권한 필수)
+                                
+                                # pyautogui.hotkey(*self.hotkey) # 창 활성화 없이 누르기 (위험)
+                                
+                                # 안전한 방식: 창 찾기 시도 -> 키 입력
+                                # 실제 사용 시에는 창 이름을 정확히 설정해야 합니다.
+                                # self.focus_window() 
+                                pyautogui.hotkey(*self.hotkey)
+                                
+                                last_trigger_time = now
+                            break # 스케일 루프 탈출
+                    
+                    if not found:
+                        time.sleep(0.2) # CPU 점유율 낮추기
+                    
+                except Exception as e:
+                    self.log_signal.emit({"time": "에러", "strat": "이미지", "prog": "예외", "result": "중단", "note": str(e)})
+                    time.sleep(1)
+
+    def stop(self):
+        self.is_running = False
+        self.wait()

@@ -6,5 +6,5 @@ try:
         x, y = pyautogui.position()
         print(f"X={x} Y={y}", end="\r", flush=True)
         time.sleep(0.05)
-except KeyboardInterrupt: 
+except KeyboardInterrupt:
     print("\nStopped.")
